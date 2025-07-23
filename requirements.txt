@@ -7,3 +7,4 @@ matplotlib
 Pillow
 joblib
 opencv-python-headless
+tqdm
