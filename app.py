@@ -6,9 +6,7 @@ import pickle
 from PIL import Image
 from skimage.color import rgb2gray
 from skimage.feature import hog
-from tqdm import tqdm
 
-# Load model and label encoder
 with open("plant_disease_model.pkl", "rb") as f:
     model = pickle.load(f)
 
@@ -60,7 +58,7 @@ def load_and_predict_dataset():
     images = []
     actuals = []
 
-    for i, image_id in tqdm(enumerate(image_ids), total=300):
+    for i, image_id in enumerate(image_ids):
         img_path = os.path.join(IMAGES_PATH, image_id + ".jpg")
         if os.path.exists(img_path):
             image = Image.open(img_path)
