@@ -1,86 +1,98 @@
 import streamlit as st
-import numpy as np
-import pandas as pd
 import os
+import numpy as np
 from PIL import Image
-from skimage.feature import hog
-from sklearn.preprocessing import LabelEncoder
 import joblib
+from skimage.feature import hog
+from skimage.color import rgb2gray
+import pandas as pd
 
-# ---------- Load Model and Label Encoder ----------
+# ----------------------------- FEATURE EXTRACTION -----------------------------
+def extract_features(image):
+    image = image.resize((128, 128))
+    image_np = np.array(image)
+    gray_image = rgb2gray(image_np)
+
+    # HOG features
+    hog_features = hog(gray_image, pixels_per_cell=(16, 16), cells_per_block=(2, 2), feature_vector=True)
+
+    # Color histogram features (32 bins per channel)
+    hist_features = []
+    for i in range(3):
+        hist, _ = np.histogram(image_np[:, :, i], bins=32, range=(0, 256))
+        hist_features.extend(hist)
+
+    return np.hstack([hog_features, hist_features])
+
+# ----------------------------- MODEL LOADING -----------------------------
 @st.cache_resource
 def load_model():
     model = joblib.load("plant_disease_model.joblib")
     le = joblib.load("label_encoder.joblib")
     return model, le
 
-# ---------- Feature Extraction ----------
-def extract_features(image):
-    image = image.resize((128, 128)).convert('RGB')
-    image_np = np.array(image)
+model, le = load_model()
 
-    # Color Histogram
-    hist_features = []
-    for i in range(3):  # R, G, B
-        hist = np.histogram(image_np[:, :, i], bins=32, range=(0, 256))[0]
-        hist_features.extend(hist)
+# ----------------------------- PAGE SETUP -----------------------------
+st.title("🌿 Plant Disease Classifier")
+st.write("Upload a leaf image to classify the plant disease.")
 
-    # HOG Features
-    gray = np.dot(image_np[..., :3], [0.2989, 0.5870, 0.1140])
-    hog_features = hog(gray, pixels_per_cell=(16, 16), cells_per_block=(2, 2), feature_vector=True)
+# ----------------------------- SINGLE IMAGE UPLOAD -----------------------------
+uploaded_file = st.file_uploader("Upload a leaf image...", type=["jpg", "png", "jpeg"])
 
-    return np.hstack([hist_features, hog_features])
-
-# ---------- Load and Predict on Dataset Images ----------
-@st.cache_data
-def load_dataset():
-    df = pd.read_csv("data/train.csv")
-    df["label"] = df[['healthy', 'multiple_diseases', 'rust', 'scab']].idxmax(axis=1)
-    images = []
-    labels = []
-    features = []
-
-    for i, row in df.head(300).iterrows():
-        img_path = os.path.join("data/images", row["image_id"] + ".jpg")
-        if os.path.exists(img_path):
-            image = Image.open(img_path)
-            feature = extract_features(image)
-            images.append(image)
-            features.append(feature)
-            labels.append(row["label"])
-
-    model, le = load_model()
-    X = np.array(features)
-    y_true = labels
-    y_pred = le.inverse_transform(model.predict(X))
-
-    return images, y_true, y_pred
-
-# ---------- Streamlit UI ----------
-st.title("🌿 Plant Disease Classification App")
-
-# Section 1: Upload and Predict
-st.header("📷 Upload a Leaf Image for Prediction")
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file:
+if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
-    with st.spinner("Extracting features and making prediction..."):
-        feature = extract_features(image).reshape(1, -1)
-        model, le = load_model()
-        prediction = model.predict(feature)
-        label = le.inverse_transform(prediction)[0]
+    features = extract_features(image).reshape(1, -1)
 
-    st.success(f"✅ Predicted Disease: **{label}**")
+    if features.shape[1] == model.n_features_in_:
+        prediction = model.predict(features)
+        predicted_label = le.inverse_transform(prediction)[0]
+        st.success(f"**Predicted Disease:** {predicted_label}")
+    else:
+        st.error(f"Feature size mismatch! Model expects {model.n_features_in_} features but got {features.shape[1]}.")
 
-# Section 2: Dataset Predictions
-st.header("🖼️ Predictions on First 300 Dataset Images")
+# ----------------------------- AUTO DISPLAY 300 DATASET IMAGES -----------------------------
+st.header("📦 Predictions on First 300 Dataset Images")
 
-if st.button("Show Predictions on Dataset"):
-    with st.spinner("Loading dataset and predicting..."):
-        images, labels, preds = load_dataset()
+@st.cache_data
+def load_csv_and_predict():
+    df = pd.read_csv("data/train.csv")
+    df = df.head(300)
 
-    for i in range(len(images)):
-        st.image(images[i], caption=f"Actual: {labels[i]} | Predicted: {preds[i]}", width=200)
+    records = []
+    for idx, row in df.iterrows():
+        image_id = row["image_id"]
+        true_label = row.drop("image_id").idxmax()
+
+        image_path = os.path.join("data", "images", image_id + ".jpg")
+        if os.path.exists(image_path):
+            try:
+                img = Image.open(image_path)
+                features = extract_features(img).reshape(1, -1)
+
+                if features.shape[1] != model.n_features_in_:
+                    pred_label = "❌ Feature size mismatch"
+                else:
+                    pred = model.predict(features)
+                    pred_label = le.inverse_transform(pred)[0]
+
+                records.append((image_id, true_label, pred_label, image_path))
+            except:
+                records.append((image_id, true_label, "❌ Error loading", ""))
+        else:
+            records.append((image_id, true_label, "❌ Image Not Found", ""))
+
+    return records
+
+records = load_csv_and_predict()
+
+for image_id, true_label, pred_label, img_path in records:
+    cols = st.columns([1, 2])
+    if os.path.exists(img_path):
+        cols[0].image(img_path, width=120)
+    cols[1].markdown(f"**Image ID:** {image_id}")
+    cols[1].markdown(f"✅ **True Label:** {true_label}")
+    cols[1].markdown(f"🔍 **Predicted:** {pred_label}")
+    cols[1].markdown("---")
