@@ -1,30 +1,14 @@
 import streamlit as st
-import os
 import numpy as np
-from PIL import Image
 import joblib
+import os
+from PIL import Image
 from skimage.feature import hog
-from skimage.color import rgb2gray
-import pandas as pd
+from sklearn.preprocessing import LabelEncoder
 
-# ----------------------------- FEATURE EXTRACTION -----------------------------
-def extract_features(image):
-    image = image.resize((128, 128))
-    image_np = np.array(image)
-    gray_image = rgb2gray(image_np)
-
-    # HOG features
-    hog_features = hog(gray_image, pixels_per_cell=(16, 16), cells_per_block=(2, 2), feature_vector=True)
-
-    # Color histogram features (32 bins per channel)
-    hist_features = []
-    for i in range(3):
-        hist, _ = np.histogram(image_np[:, :, i], bins=32, range=(0, 256))
-        hist_features.extend(hist)
-
-    return np.hstack([hog_features, hist_features])
-
-# ----------------------------- MODEL LOADING -----------------------------
+# -------------------------
+# 🚀 Load Model and Label Encoder
+# -------------------------
 @st.cache_resource
 def load_model():
     model = joblib.load("plant_disease_model.joblib")
@@ -33,66 +17,76 @@ def load_model():
 
 model, le = load_model()
 
-# ----------------------------- PAGE SETUP -----------------------------
-st.title("🌿 Plant Disease Classifier")
-st.write("Upload a leaf image to classify the plant disease.")
+# -------------------------
+# 📷 Feature Extraction (must match training!)
+# -------------------------
+def extract_features(img):
+    img = img.resize((128, 128)).convert("RGB")
+    gray_img = img.convert("L")
+    feature, _ = hog(np.array(gray_img), 
+                     orientations=9, 
+                     pixels_per_cell=(8, 8),
+                     cells_per_block=(2, 2),
+                     block_norm='L2-Hys',
+                     visualize=True)
+    return feature
 
-# ----------------------------- SINGLE IMAGE UPLOAD -----------------------------
-uploaded_file = st.file_uploader("Upload a leaf image...", type=["jpg", "png", "jpeg"])
+# -------------------------
+# 🔍 Predict Image
+# -------------------------
+def predict_disease(img):
+    try:
+        feature = extract_features(img)
+        feature = feature.reshape(1, -1)
 
-if uploaded_file is not None:
+        if feature.shape[1] != model.n_features_in_:
+            return "❌ Feature size mismatch!", None
+
+        pred = model.predict(feature)
+        pred_label = le.inverse_transform(pred)[0]
+        return f"✅ Predicted: {pred_label}", pred_label
+    except Exception as e:
+        return f"❌ Error: {str(e)}", None
+
+# -------------------------
+# 🌿 App UI
+# -------------------------
+st.title("🌿 Plant Disease Classification App")
+
+# Upload Image Section
+st.header("📤 Upload an Image")
+uploaded_file = st.file_uploader("Choose a leaf image", type=["jpg", "jpeg", "png"])
+
+if uploaded_file:
     image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_column_width=True)
+    result, _ = predict_disease(image)
+    st.markdown(f"### 🔎 {result}")
 
-    features = extract_features(image).reshape(1, -1)
+# -------------------------
+# 📦 Load 300 Dataset Images (Prediction Showcase)
+# -------------------------
+st.header("🖼️ Dataset Predictions (First 300 Images)")
+DATASET_DIR = "data/images/"
+CSV_PATH = "data/train.csv"
 
-    if features.shape[1] == model.n_features_in_:
-        prediction = model.predict(features)
-        predicted_label = le.inverse_transform(prediction)[0]
-        st.success(f"**Predicted Disease:** {predicted_label}")
-    else:
-        st.error(f"Feature size mismatch! Model expects {model.n_features_in_} features but got {features.shape[1]}.")
+if os.path.exists(CSV_PATH):
+    import pandas as pd
+    df = pd.read_csv(CSV_PATH)
 
-# ----------------------------- AUTO DISPLAY 300 DATASET IMAGES -----------------------------
-st.header("📦 Predictions on First 300 Dataset Images")
+    image_ids = df["image_id"].values[:300]
+    actual_labels = df.drop("image_id", axis=1).idxmax(axis=1).values[:300]
 
-@st.cache_data
-def load_csv_and_predict():
-    df = pd.read_csv("data/train.csv")
-    df = df.head(300)
-
-    records = []
-    for idx, row in df.iterrows():
-        image_id = row["image_id"]
-        true_label = row.drop("image_id").idxmax()
-
-        image_path = os.path.join("data", "images", image_id + ".jpg")
-        if os.path.exists(image_path):
-            try:
-                img = Image.open(image_path)
-                features = extract_features(img).reshape(1, -1)
-
-                if features.shape[1] != model.n_features_in_:
-                    pred_label = "❌ Feature size mismatch"
-                else:
-                    pred = model.predict(features)
-                    pred_label = le.inverse_transform(pred)[0]
-
-                records.append((image_id, true_label, pred_label, image_path))
-            except:
-                records.append((image_id, true_label, "❌ Error loading", ""))
-        else:
-            records.append((image_id, true_label, "❌ Image Not Found", ""))
-
-    return records
-
-records = load_csv_and_predict()
-
-for image_id, true_label, pred_label, img_path in records:
-    cols = st.columns([1, 2])
-    if os.path.exists(img_path):
-        cols[0].image(img_path, width=120)
-    cols[1].markdown(f"**Image ID:** {image_id}")
-    cols[1].markdown(f"✅ **True Label:** {true_label}")
-    cols[1].markdown(f"🔍 **Predicted:** {pred_label}")
-    cols[1].markdown("---")
+    cols = st.columns(3)
+    for i, image_id in enumerate(image_ids):
+        img_path = os.path.join(DATASET_DIR, f"{image_id}.jpg")
+        try:
+            img = Image.open(img_path)
+            result, pred_label = predict_disease(img)
+            with cols[i % 3]:
+                st.image(img, width=180, caption=f"Actual: {actual_labels[i]}\nPredicted: {pred_label}")
+        except:
+            with cols[i % 3]:
+                st.error(f"Image not found: {image_id}.jpg")
+else:
+    st.warning("train.csv not found. Please ensure dataset is uploaded.")
