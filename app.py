@@ -2,20 +2,17 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import os
-import pickle
+import joblib
 import cv2
 from skimage.feature import hog
 from PIL import Image
 
 st.set_page_config(page_title="Plant Disease Classifier", layout="wide")
 
-# Load model and label encoder
-with open("plant_disease_model.pkl", "rb") as f:
-    model = pickle.load(f)
-with open("label_encoder.pkl", "rb") as f:
-    label_encoder = pickle.load(f)
+# Load model and encoder (no pickle used)
+model = joblib.load("plant_disease_model.joblib")
+label_encoder = joblib.load("label_encoder.joblib")
 
-# Feature extractor
 def extract_features(image):
     image = cv2.resize(image, (128, 128))
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -31,7 +28,7 @@ def extract_features(image):
 
 st.title("🌿 Plant Disease Classification App")
 
-# Image upload section
+# Upload section
 st.sidebar.header("Upload Leaf Image")
 uploaded_file = st.sidebar.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
@@ -49,7 +46,6 @@ if uploaded_file:
 st.markdown("---")
 st.header("🔍 Prediction on Sample Dataset (First 300 Images)")
 
-# Display predictions for 300 images
 @st.cache_resource
 def load_dataset():
     df = pd.read_csv("data/train.csv")[:300]
