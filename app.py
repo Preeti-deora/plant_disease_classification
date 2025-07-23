@@ -3,76 +3,68 @@ import numpy as np
 import pandas as pd
 import os
 import pickle
-from PIL import Image
-from skimage.color import rgb2gray
+import cv2
 from skimage.feature import hog
+from sklearn.preprocessing import LabelEncoder
+from tqdm import tqdm
 
-with open("plant_disease_model.pkl", "rb") as f:
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+with open(os.path.join(BASE_DIR, "plant_disease_model.pkl"), "rb") as f:
     model = pickle.load(f)
 
-with open("label_encoder.pkl", "rb") as f:
+with open(os.path.join(BASE_DIR, "label_encoder.pkl"), "rb") as f:
     label_encoder = pickle.load(f)
 
-def extract_hog_features_pil(img):
-    img = img.resize((128, 128))
-    img = np.array(img)
-    gray = rgb2gray(img)
-    features = hog(
-        gray,
-        orientations=9,
-        pixels_per_cell=(8, 8),
-        cells_per_block=(2, 2),
-        channel_axis=None
-    )
-    return features
+def extract_features(image):
+    image_resized = cv2.resize(image, (128, 128))
+    gray = cv2.cvtColor(image_resized, cv2.COLOR_BGR2GRAY)
+    hog_features = hog(gray, orientations=9, pixels_per_cell=(8, 8), cells_per_block=(2, 2), channel_axis=None)
+    hist_b = cv2.calcHist([image_resized], [0], None, [32], [0, 256]).flatten()
+    hist_g = cv2.calcHist([image_resized], [1], None, [32], [0, 256]).flatten()
+    hist_r = cv2.calcHist([image_resized], [2], None, [32], [0, 256]).flatten()
+    color_hist = np.concatenate([hist_b, hist_g, hist_r])
+    return np.concatenate([hog_features, color_hist])
 
-def predict_image(image):
-    features = extract_hog_features_pil(image).reshape(1, -1)
-    prediction = model.predict(features)
-    predicted_label = label_encoder.inverse_transform(prediction)[0]
-    return predicted_label
+st.title("🌿 Plant Disease Classification App")
 
-st.title("🌿 Plant Disease Classifier")
-
-st.sidebar.header("Upload Image")
-uploaded_file = st.sidebar.file_uploader("Choose a plant leaf image...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Upload a leaf image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", use_column_width=True)
-    st.write("Predicting...")
-    predicted_label = predict_image(image)
-    st.success(f"Predicted Disease: {predicted_label}")
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    image = cv2.imdecode(file_bytes, 1)
+    features = extract_features(image).reshape(1, -1)
+    if features.shape[1] != model.n_features_in_:
+        st.error(f"Feature length mismatch. Expected {model.n_features_in_}, got {features.shape[1]}")
+    else:
+        prediction = model.predict(features)
+        predicted_label = label_encoder.inverse_transform(prediction)[0]
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption=f"Predicted: {predicted_label}", use_column_width=True)
 
-st.markdown("---")
-st.header("🔍 Dataset Predictions (First 300 Images)")
+st.header("🔍 Predictions on 300 Default Images")
 
-@st.cache_resource
-def load_and_predict_dataset():
-    df = pd.read_csv("data/train.csv")
-    IMAGES_PATH = "data/images"
-    image_ids = df["image_id"].tolist()[:300]
-    labels = df.drop("image_id", axis=1).idxmax(axis=1).tolist()[:300]
+DATA_DIR = os.path.join(BASE_DIR, "data")
+IMAGES_DIR = os.path.join(DATA_DIR, "images")
+CSV_PATH = os.path.join(DATA_DIR, "train.csv")
 
-    predictions = []
-    images = []
-    actuals = []
+df = pd.read_csv(CSV_PATH)
+df = df.head(300)
 
-    for i, image_id in enumerate(image_ids):
-        img_path = os.path.join(IMAGES_PATH, image_id + ".jpg")
-        if os.path.exists(img_path):
-            image = Image.open(img_path)
-            try:
-                pred = predict_image(image)
-                predictions.append(pred)
-                images.append(image)
-                actuals.append(labels[i])
-            except:
-                continue
+images = []
+actual_labels = []
+predicted_labels = []
 
-    return images, predictions, actuals
-
-images, predictions, actuals = load_and_predict_dataset()
+for idx, row in tqdm(df.iterrows(), total=len(df)):
+    img_path = os.path.join(IMAGES_DIR, row["image_id"] + ".jpg")
+    if os.path.exists(img_path):
+        image = cv2.imread(img_path)
+        features = extract_features(image).reshape(1, -1)
+        if features.shape[1] == model.n_features_in_:
+            prediction = model.predict(features)
+            pred_label = label_encoder.inverse_transform(prediction)[0]
+            predicted_labels.append(pred_label)
+            actual_labels.append(row["label"])
+            images.append(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
 for i in range(len(images)):
-    st.image(images[i], caption=f"Actual: {actuals[i]} | Predicted: {predictions[i]}", use_column_width=True)
+    st.image(images[i], caption=f"Actual: {actual_labels[i]} | Predicted: {predicted_labels[i]}", use_column_width=True)
