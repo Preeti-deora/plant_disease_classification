@@ -6,3 +6,4 @@ scikit-image
 matplotlib
 Pillow
 joblib
+opencv-python-headless
