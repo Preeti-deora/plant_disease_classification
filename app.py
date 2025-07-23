@@ -1,76 +1,77 @@
 import streamlit as st
-import os
-import pandas as pd
 import numpy as np
+import pandas as pd
+import os
+import pickle
 import cv2
-import joblib
 from skimage.feature import hog
 from PIL import Image
 
+st.set_page_config(page_title="Plant Disease Classifier", layout="wide")
+
 # Load model and label encoder
-model = joblib.load("plant_disease_model.pkl")
-label_encoder = joblib.load("label_encoder.pkl")
+with open("plant_disease_model.pkl", "rb") as f:
+    model = pickle.load(f)
+with open("label_encoder.pkl", "rb") as f:
+    label_encoder = pickle.load(f)
 
-# HOG feature extractor
-def extract_features(image_path):
-    try:
-        img = cv2.imread(image_path)
-        img = cv2.resize(img, (128, 128))
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        features = hog(gray, orientations=9, pixels_per_cell=(16,16), cells_per_block=(2,2), block_norm='L2-Hys')
-        return features
-    except:
-        return None
+# Feature extractor
+def extract_features(image):
+    image = cv2.resize(image, (128, 128))
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    features, _ = hog(
+        gray,
+        orientations=9,
+        pixels_per_cell=(8, 8),
+        cells_per_block=(2, 2),
+        visualize=True,
+        channel_axis=-1
+    )
+    return features
 
-# App UI
-st.title("🌿 Plant Disease Classifier (Traditional ML)")
-st.write("Upload an image or view predictions on 300 dataset images.")
+st.title("🌿 Plant Disease Classification App")
 
-# Upload image
-uploaded_file = st.file_uploader("Upload a plant leaf image", type=["jpg", "jpeg", "png"])
+# Image upload section
+st.sidebar.header("Upload Leaf Image")
+uploaded_file = st.sidebar.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
 if uploaded_file:
     image = Image.open(uploaded_file)
+    image_np = np.array(image.convert("RGB"))
     st.image(image, caption="Uploaded Image", use_column_width=True)
-    image = image.convert("RGB")
-    image = image.resize((128, 128))
-    gray = np.array(image.convert("L"))
-    features = hog(gray, orientations=9, pixels_per_cell=(16,16), cells_per_block=(2,2), block_norm='L2-Hys')
-    features = np.array(features).reshape(1, -1)
-    if features.shape[1] != 1764:
-        st.error(f"Feature vector size mismatch. Got {features.shape[1]}, expected 1764.")
-    else:
-        prediction = model.predict(features)
-        label = label_encoder.inverse_transform(prediction)[0]
-        st.success(f"Predicted Disease: **{label}**")
 
-# Load first 300 dataset images
-st.subheader("📦 Auto Predictions on Dataset (First 300 Images)")
+    features = extract_features(image_np).reshape(1, -1)
+    prediction = model.predict(features)
+    predicted_label = label_encoder.inverse_transform(prediction)[0]
 
-df = pd.read_csv("data/train.csv")
-images = []
-actual_labels = []
-predicted_labels = []
+    st.success(f"✅ Predicted Disease: **{predicted_label}**")
 
-count = 0
-for _, row in df.iterrows():
-    if count >= 300:
-        break
-    image_id = row['image_id']
-    label = row['label']
-    image_path = os.path.join("data/images", image_id + ".jpg")
-    if not os.path.exists(image_path):
-        continue
-    features = extract_features(image_path)
-    if features is None or len(features) != 1764:
-        continue
-    pred = model.predict([features])
-    pred_label = label_encoder.inverse_transform(pred)[0]
-    img = Image.open(image_path).resize((128, 128))
-    images.append(img)
-    actual_labels.append(label)
-    predicted_labels.append(pred_label)
-    count += 1
+st.markdown("---")
+st.header("🔍 Prediction on Sample Dataset (First 300 Images)")
 
-# Display predictions
+# Display predictions for 300 images
+@st.cache_resource
+def load_dataset():
+    df = pd.read_csv("data/train.csv")[:300]
+    images, labels, preds = [], [], []
+    for _, row in df.iterrows():
+        img_path = os.path.join("data/images", row["image"])
+        if os.path.exists(img_path):
+            img = cv2.imread(img_path)
+            if img is None:
+                continue
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            feat = extract_features(img).reshape(1, -1)
+            pred = model.predict(feat)
+            pred_label = label_encoder.inverse_transform(pred)[0]
+            images.append(img_rgb)
+            labels.append(row["label"])
+            preds.append(pred_label)
+    return images, labels, preds
+
+images, labels, preds = load_dataset()
+
+cols = st.columns(3)
 for i in range(len(images)):
-    st.image(images[i], caption=f"Actual: {actual_labels[i]} | Predicted: {predicted_labels[i]}", use_column_width=True)
+    with cols[i % 3]:
+        st.image(images[i], caption=f"Actual: {labels[i]}\nPredicted: {preds[i]}", use_column_width=True)
